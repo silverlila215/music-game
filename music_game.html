@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no"/>
+<title>music_game</title>
+<style>
+  html,body{
+    margin:0; padding:0;
+    width:100%; height:100%;
+    overflow:hidden;
+    background:#000;
+    font-family: system-ui, -apple-system, Apple SD Gothic Neo, Noto Sans KR, sans-serif;
+  }
+  canvas{display:block; touch-action:none;}
+
+  .title{
+    position:fixed;
+    top:12px; left:50%;
+    transform:translateX(-50%);
+    color:#fff;
+    font-size:16px;
+    font-weight:900;
+    padding:7px 12px;
+    background:rgba(0,0,0,0.42);
+    border-radius:14px;
+    z-index:10;
+    white-space:nowrap;
+  }
+
+  .score{
+    position:fixed;
+    top:10px; right:12px;
+    color:#fff;
+    font-weight:900;
+    background:rgba(0,0,0,0.42);
+    padding:7px 10px;
+    border-radius:12px;
+    z-index:10;
+    display:none;
+    font-size:14px;
+  }
+
+  .sound{
+    position:fixed;
+    top:44px; right:12px;
+    color:#fff;
+    font-weight:900;
+    background:rgba(0,0,0,0.32);
+    padding:7px 10px;
+    border-radius:12px;
+    z-index:10;
+    border:1px solid rgba(255,255,255,0.18);
+    display:none;
+    font-size:14px;
+  }
+
+  .overlay{
+    position:fixed;
+    inset:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background:rgba(0,0,0,0.65);
+    z-index:20;
+  }
+  .panel{
+    background:rgba(255,255,255,0.16);
+    border-radius:24px;
+    padding:22px;
+    width:85%;
+    max-width:360px;
+    text-align:center;
+    color:#fff;
+    border:1px solid rgba(255,255,255,0.18);
+  }
+  .panel h2{margin:0 0 10px;font-size:24px; letter-spacing:-0.5px;}
+  .panel p{margin:0 0 16px;font-weight:800; line-height:1.35;}
+  .panel button{
+    width:100%;
+    padding:16px;
+    border-radius:18px;
+    border:none;
+    font-size:20px;
+    font-weight:1000;
+    background:#FFD400;
+    cursor:pointer;
+  }
+  .small{
+    margin-top:10px;
+    opacity:0.9;
+    font-size:13px;
+    font-weight:700;
+  }
+</style>
+</head>
+<body>
+
+<div class="title">제9회 연말 가족 음악회</div>
+<div class="score" id="score">점수: 0</div>
+<button class="sound" id="soundBtn">🔊 음악 ON</button>
+<canvas id="game"></canvas>
+
+<div class="overlay" id="overlay">
+  <div class="panel">
+    <h2 id="ovTitle">시작하기</h2>
+    <p id="ovMsg">화면을 터치하면<br>음표가 위로 점프해요 🎵</p>
+    <button id="mainBtn">시작하기</button>
+    <div class="small" id="ovSub">※ 시작 버튼을 눌러야 음악이 재생돼요</div>
+  </div>
+</div>
+
+<script>
+/* =========================
+   CONFIG
+========================= */
+const names = [
+ "할머니","이남호","이강욱","이승철","박은정","이지희","이유숙",
+ "이승제","이은제","이규진","이루다","이하라","이나연","이우진"
+];
+
+const outfitColors = [
+ "#FF5A7A","#FF9F1C","#2EC4B6","#4D96FF","#A66CFF","#FFD166",
+ "#06D6A0","#EF476F","#118AB2","#F4A261","#E76F51","#8AC926",
+ "#9B5DE5","#00BBF9"
+];
+
+/* ✅ 속도 규칙(랜덤 X)
+   - 1~3번: 동일한 느린 속도
+   - 4번부터: 등장할 때마다 점점 빨라짐
+   - 라운드가 반복되면 다시 1~3 느리게부터 시작
+*/
+const SPEED_SLOW = 360;        // 1~3 동일 느린 속도
+const SPEED_START_FAST = 480;  // 4번째 시작 속도
+const SPEED_STEP = 40;         // 4번째 이후 증가량
+const SPEED_MAX = 860;         // 너무 빨라지지 않게 상한
+
+const TOTAL_ROUNDS = 2;
+
+/* =========================
+   DOM / CANVAS
+========================= */
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const scoreEl = document.getElementById("score");
+const overlay = document.getElementById("overlay");
+const ovTitle = document.getElementById("ovTitle");
+const ovMsg = document.getElementById("ovMsg");
+const ovSub = document.getElementById("ovSub");
+const mainBtn = document.getElementById("mainBtn");
+const soundBtn = document.getElementById("soundBtn");
+
+let W=0,H=0;
+function resize(){
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+window.addEventListener("resize", resize);
+resize();
+
+/* =========================
+   AUDIO (경쾌한 BGM: WebAudio)  ✅ 그대로 유지
+========================= */
+let audioCtx=null, masterGain=null, musicTimer=null;
+let musicOn = true;
+let musicStarted = false;
+const bpm = 140;
+
+function ensureAudio(){
+  if(audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = 0.22;
+  masterGain.connect(audioCtx.destination);
+}
+
+function playTone(freq, when, dur, type="square", vol=0.12){
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(freq, when);
+  g.gain.setValueAtTime(0.0001, when);
+  g.gain.exponentialRampToValueAtTime(vol, when + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + Math.max(0.03, dur));
+  o.connect(g); g.connect(masterGain);
+  o.start(when);
+  o.stop(when + dur + 0.05);
+}
+
+function playKick(when){
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type="sine";
+  o.frequency.setValueAtTime(170, when);
+  o.frequency.exponentialRampToValueAtTime(55, when+0.09);
+  g.gain.setValueAtTime(0.001, when);
+  g.gain.exponentialRampToValueAtTime(0.42, when+0.01);
+  g.gain.exponentialRampToValueAtTime(0.001, when+0.14);
+  o.connect(g); g.connect(masterGain);
+  o.start(when); o.stop(when+0.16);
+}
+
+function playHat(when){
+  const bufferSize = Math.floor(audioCtx.sampleRate * 0.055);
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for(let i=0;i<bufferSize;i++){
+    data[i] = (Math.random()*2-1) * Math.exp(-i/(bufferSize/5));
+  }
+  const src = audioCtx.createBufferSource();
+  const g = audioCtx.createGain();
+  src.buffer = buffer;
+  g.gain.setValueAtTime(0.18, when);
+  g.gain.exponentialRampToValueAtTime(0.001, when+0.06);
+  src.connect(g); g.connect(masterGain);
+  src.start(when);
+}
+
+function startMusic(){
+  if(!musicOn) return;
+  ensureAudio();
+  audioCtx.resume();
+
+  if(musicStarted) return;
+  musicStarted = true;
+
+  const beat = 60 / bpm;
+  const melody = [659.25, 740.0, 880.0, 740.0, 659.25, 0, 659.25, 988.0];
+  const bass   = [164.81, 164.81, 185.0, 185.0, 220.0, 220.0, 185.0, 185.0];
+
+  let step = 0;
+  let nextTime = audioCtx.currentTime + 0.05;
+
+  musicTimer = setInterval(() => {
+    if(!musicOn || !audioCtx) return;
+
+    const scheduleAhead = 0.5;
+    while(nextTime < audioCtx.currentTime + scheduleAhead){
+      const s = step % 8;
+
+      if(s === 0 || s === 4) playKick(nextTime);
+      playHat(nextTime);
+
+      playTone(bass[s], nextTime, beat*0.9, "sawtooth", 0.11);
+      if(melody[s] > 0) playTone(melody[s], nextTime, beat*0.88, "square", 0.10);
+
+      step++;
+      nextTime += beat;
+    }
+  }, 60);
+}
+
+function stopMusic(){
+  musicStarted = false;
+  if(musicTimer) clearInterval(musicTimer);
+  musicTimer = null;
+}
+
+soundBtn.addEventListener("click", () => {
+  musicOn = !musicOn;
+  soundBtn.textContent = musicOn ? "🔊 음악 ON" : "🔇 음악 OFF";
+  if(!musicOn) stopMusic();
+  else startMusic();
+});
+
+/* ✅ 점프 ‘뿅’ 효과음 유지 */
+function playJumpSound(){
+  ensureAudio();
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = "sine";
+  o.frequency.setValueAtTime(650, audioCtx.currentTime);
+  o.frequency.exponentialRampToValueAtTime(950, audioCtx.currentTime + 0.08);
+  g.gain.setValueAtTime(0.001, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.28, audioCtx.currentTime + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.12);
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start();
+  o.stop(audioCtx.currentTime + 0.15);
+}
+
+/* =========================
+   ✅ 성공 연출(폭죽 + 팡파레) : 추가된 부분 (다른 건 그대로)
+========================= */
+let fanfarePlayed = false;
+
+function playFanfare(){
+  ensureAudio();
+  if(fanfarePlayed) return;
+  fanfarePlayed = true;
+
+  const seq = [
+    {f:523.25, d:0.18, t:"square", v:0.16}, // C5
+    {f:659.25, d:0.18, t:"square", v:0.16}, // E5
+    {f:783.99, d:0.20, t:"square", v:0.16}, // G5
+    {f:1046.50,d:0.32, t:"square", v:0.18}, // C6
+    {f:987.77, d:0.18, t:"square", v:0.14}, // B5
+    {f:1046.50,d:0.38, t:"square", v:0.18}, // C6
+  ];
+
+  let t0 = audioCtx.currentTime + 0.02;
+
+  // 반짝 심벌(노이즈)
+  for(let i=0;i<3;i++){
+    const when = t0 + i*0.18;
+    const bufferSize = Math.floor(audioCtx.sampleRate * 0.09);
+    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for(let j=0;j<bufferSize;j++){
+      data[j] = (Math.random()*2-1) * Math.exp(-j/(bufferSize/6));
+    }
+    const src = audioCtx.createBufferSource();
+    const g = audioCtx.createGain();
+    src.buffer = buffer;
+    g.gain.setValueAtTime(0.001, when);
+    g.gain.exponentialRampToValueAtTime(0.18, when+0.01);
+    g.gain.exponentialRampToValueAtTime(0.001, when+0.10);
+    src.connect(g); g.connect(masterGain);
+    src.start(when);
+  }
+
+  // 멜로디
+  for(const n of seq){
+    playTone(n.f, t0, n.d, n.t, n.v);
+    t0 += 0.14;
+  }
+}
+
+function spawnFireworksBurst(){
+  const bursts = 9;
+  for(let b=0;b<bursts;b++){
+    const cx = rand(W*0.12, W*0.88);
+    const cy = rand(H*0.10, H*0.45);
+    const count = 140;
+    for(let i=0;i<count;i++){
+      const ang = Math.random()*Math.PI*2;
+      const spd = rand(240, 820);
+      fireworks.push({
+        x: cx, y: cy,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd - rand(120, 380),
+        r: rand(1.8, 3.6),
+        life: rand(1.6, 2.8),
+        color: `hsl(${Math.random()*360},100%,60%)`
+      });
+    }
+  }
+}
+
+function updateFireworks(dt){
+  for(const f of fireworks){
+    f.x += f.vx * dt;
+    f.y += f.vy * dt;
+    f.vy += 620 * dt;
+    f.life -= dt;
+    f.r = Math.max(1.2, f.r - dt*0.15);
+  }
+  fireworks = fireworks.filter(f => f.life > 0);
+}
+
+function drawFireworks(){
+  for(const f of fireworks){
+    ctx.fillStyle = f.color;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, f.r, 0, Math.PI*2);
+    ctx.fill();
+  }
+}
+
+/* =========================
+   GAME STATE
+========================= */
+let state = "menu";
+let lastTime = 0;
+let score = 0;
+
+let player;
+let obstacle = null;
+
+let nameIndex = 0;     // 0~13
+let round = 1;         // 1~TOTAL_ROUNDS
+
+let fireworks = [];
+let noteSparkles = [];
+
+/* =========================
+   HELPERS
+========================= */
+function rand(min,max){ return min + Math.random()*(max-min); }
+
+function resetGame(){
+  score = 0;
+  round = 1;
+  nameIndex = 0;
+  fireworks = [];
+  noteSparkles = [];
+  fanfarePlayed = false;      // ✅ 성공 팡파레 재시작을 위해 초기화
+  player = { x: 90, y: H/2, vy: 0, jumping:false };
+  obstacle = null;
+  spawnObstacle();
+}
+
+function startNextRound(){
+  round++;
+  nameIndex = 0;
+  obstacle = null;
+  spawnObstacle();
+}
+
+function getDeterministicSpeed(index){
+  if(index < 3) return SPEED_SLOW;
+  const k = index - 3;
+  return Math.min(SPEED_START_FAST + k * SPEED_STEP, SPEED_MAX);
+}
+
+function spawnObstacle(){
+  if(nameIndex >= names.length){
+    if(round < TOTAL_ROUNDS){
+      startNextRound();
+      return;
+    } else {
+      win();
+      return;
+    }
+  }
+
+  const base = getDeterministicSpeed(nameIndex);
+
+  obstacle = {
+    x: W + 90,
+    y: H/2,
+    speed: base,
+    name: names[nameIndex],
+    outfit: outfitColors[nameIndex % outfitColors.length]
+  };
+
+  nameIndex++;
+}
+
+function spawnJumpSparkles(){
+  for(let i=0;i<12;i++){
+    noteSparkles.push({
+      x: player.x + (Math.random()*18-9),
+      y: player.y + (Math.random()*18-9),
+      vx: (Math.random()-0.5)*2.8,
+      vy: -(1.8 + Math.random()*2.8),
+      a: 1,
+      s: 10 + Math.random()*8
+    });
+  }
+}
+
+/* =========================
+   INPUT
+========================= */
+function doJump(){
+  if(state !== "play") return;
+  if(!player.jumping){
+    playJumpSound();
+    player.jumping = true;
+    player.vy = -820;
+    spawnJumpSparkles();
+  }
+}
+
+canvas.addEventListener("pointerdown", () => doJump());
+window.addEventListener("keydown", (e) => {
+  if(e.key === " " || e.key === "ArrowUp") doJump();
+});
+
+/* =========================
+   DRAWING
+========================= */
+function drawBackground(){
+  const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,"#6B00B6");
+  g.addColorStop(0.55,"#120046");
+  g.addColorStop(1,"#050012");
+  ctx.fillStyle=g;
+  ctx.fillRect(0,0,W,H);
+
+  const lights = [
+    {x:W*0.18, y:H*0.16, r:260, c:"rgba(255,0,180,0.28)"},
+    {x:W*0.82, y:H*0.18, r:280, c:"rgba(0,190,255,0.25)"},
+    {x:W*0.52, y:H*0.26, r:320, c:"rgba(255,230,0,0.20)"},
+    {x:W*0.50, y:H*0.10, r:340, c:"rgba(120,255,190,0.12)"}
+  ];
+  for(const L of lights){
+    const rg = ctx.createRadialGradient(L.x,L.y,10,L.x,L.y,L.r);
+    rg.addColorStop(0, L.c);
+    rg.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = rg;
+    ctx.fillRect(0,0,W,H);
+  }
+
+  ctx.globalAlpha=0.22;
+  for(let i=1;i<=3;i++){
+    ctx.beginPath();
+    ctx.moveTo(W*i/4,-30);
+    ctx.lineTo(W*i/4-260,H);
+    ctx.lineTo(W*i/4+260,H);
+    ctx.closePath();
+    ctx.fillStyle="white";
+    ctx.fill();
+  }
+  ctx.globalAlpha=1;
+
+  ctx.fillStyle="rgba(255,255,255,0.06)";
+  ctx.fillRect(0, H*0.82, W, H*0.18);
+
+  ctx.fillStyle="rgba(255,255,255,0.75)";
+  ctx.font="800 12px system-ui, -apple-system, Apple SD Gothic Neo, Noto Sans KR, sans-serif";
+  ctx.textAlign="left";
+  ctx.textBaseline="top";
+  ctx.fillText(`ROUND ${round}/${TOTAL_ROUNDS}`, 12, 70);
+}
+
+function drawMusicNoteIcon(x,y,scale,alpha){
+  ctx.save();
+  ctx.translate(x,y);
+  ctx.scale(scale, scale);
+  ctx.globalAlpha = alpha;
+
+  const yellow = "#FFD400";
+  const outline = "rgba(0,0,0,0.18)";
+
+  ctx.fillStyle = yellow;
+  ctx.beginPath();
+  ctx.ellipse(-6, 8, 12, 9, -0.2, 0, Math.PI*2);
+  ctx.fill();
+
+  ctx.fillRect(6, -28, 5, 30);
+
+  ctx.beginPath();
+  ctx.moveTo(11, -28);
+  ctx.quadraticCurveTo(34, -26, 28, -8);
+  ctx.quadraticCurveTo(23, 2, 11, -2);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.strokeStyle = outline;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.ellipse(-6, 8, 12, 9, -0.2, 0, Math.PI*2);
+  ctx.stroke();
+  ctx.strokeRect(6, -28, 5, 30);
+
+  ctx.restore();
+}
+
+function drawPlayer(){
+  drawMusicNoteIcon(player.x, player.y, 1, 1);
+}
+
+function drawSparkles(){
+  for(const p of noteSparkles){
+    drawMusicNoteIcon(p.x, p.y, p.s/24, Math.max(0,p.a));
+  }
+}
+
+function drawPerson(){
+  if(!obstacle) return;
+
+  ctx.save();
+  ctx.translate(obstacle.x, obstacle.y);
+
+  ctx.fillStyle="#fff";
+  ctx.beginPath();
+  ctx.arc(0,-22,14,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.fillStyle="rgba(255,120,170,0.9)";
+  ctx.beginPath();
+  ctx.arc(-7,-22,2.6,0,Math.PI*2);
+  ctx.arc(7,-22,2.6,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.fillStyle="rgba(0,0,0,0.72)";
+  ctx.beginPath();
+  ctx.arc(-4.5,-24,1.8,0,Math.PI*2);
+  ctx.arc(4.5,-24,1.8,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.strokeStyle="rgba(0,0,0,0.55)";
+  ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.arc(0,-18,3,0.1*Math.PI,0.9*Math.PI);
+  ctx.stroke();
+
+  ctx.fillStyle = obstacle.outfit;
+  ctx.beginPath();
+  ctx.roundRect(-14,-8,28,34,13);
+  ctx.fill();
+
+  ctx.fillStyle="rgba(255,255,255,0.95)";
+  ctx.beginPath();
+  ctx.roundRect(-20, 1, 7, 15, 6);
+  ctx.roundRect(13, 1, 7, 15, 6);
+  ctx.fill();
+
+  ctx.strokeStyle="rgba(255,255,255,0.35)";
+  ctx.lineWidth=2;
+  ctx.stroke();
+
+  ctx.fillStyle="#fff";
+  ctx.font="900 15px system-ui, -apple-system, Apple SD Gothic Neo, Noto Sans KR, sans-serif";
+  ctx.textAlign="center";
+  ctx.textBaseline="top";
+  ctx.fillText(obstacle.name, 0, 46);
+
+  ctx.restore();
+}
+
+/* =========================
+   UPDATE
+========================= */
+function updatePlay(dt){
+  if(player.jumping){
+    player.vy += 2400*dt;
+    player.y  += player.vy*dt;
+    if(player.y > H/2){
+      player.y = H/2;
+      player.jumping = false;
+    }
+  }
+
+  score += dt;
+  scoreEl.textContent = "점수: " + Math.floor(score);
+
+  if(obstacle){
+    obstacle.x -= obstacle.speed * dt;
+
+    if(Math.abs(player.x - obstacle.x) < 38 && Math.abs(player.y - obstacle.y) < 56){
+      gameOver();
+      return;
+    }
+    if(obstacle.x < -120){
+      spawnObstacle();
+    }
+  }
+
+  for(const p of noteSparkles){
+    p.x += p.vx * 60 * dt;
+    p.y += p.vy * 60 * dt;
+    p.vy += 0.10;
+    p.a  -= dt * 1.7;
+  }
+  noteSparkles = noteSparkles.filter(p => p.a > 0);
+}
+
+/* =========================
+   STATE TRANSITIONS
+========================= */
+function showOverlay(title, msg, btnText){
+  ovTitle.textContent = title;
+  ovMsg.innerHTML = msg;
+  mainBtn.textContent = btnText;
+  overlay.style.display = "flex";
+}
+
+function hideOverlay(){
+  overlay.style.display = "none";
+}
+
+function startFromMenu(){
+  if(musicOn) startMusic();
+  scoreEl.style.display = "block";
+  soundBtn.style.display = "block";
+  resetGame();
+  state = "play";
+  hideOverlay();
+}
+
+function gameOver(){
+  state = "over";
+  showOverlay("게임 오버", "아! 부딪혔어요", "다시 시작");
+  const passedThisRound = Math.min(nameIndex-1, names.length);
+  ovSub.textContent = `점수: ${Math.floor(score)} · ROUND ${round}/${TOTAL_ROUNDS} · 진행: ${passedThisRound}/${names.length}`;
+}
+
+/* ✅ 여기만 “요청한대로” 성공 연출 추가 */
+function win(){
+  state = "win";
+  stopMusic();           // 배경음악 멈추고
+  playFanfare();         // 팡파레!
+  fireworks = [];        // 폭죽 쏟아짐
+  spawnFireworksBurst();
+
+  showOverlay("최종 성공!", `성공! 14명 × ${TOTAL_ROUNDS}회 모두 통과! 🎆`, "다시 시작");
+  ovSub.textContent = `최종 점수: ${Math.floor(score)} · (폭죽 + 팡파레)`;
+}
+
+/* =========================
+   MAIN LOOP
+========================= */
+function loop(t){
+  const dt = Math.min(0.033, (t - lastTime)/1000 || 0);
+  lastTime = t;
+
+  drawBackground();
+
+  if(state === "play"){
+    updatePlay(dt);
+    drawPerson();
+    drawSparkles();
+    drawPlayer();
+  } else if(state === "win"){
+    // 성공 화면에서도 폭죽이 계속 쏟아지게(주기적으로 추가)
+    if(fireworks.length < 400) spawnFireworksBurst();
+    updateFireworks(dt);
+    drawFireworks();
+  }
+
+  // (혹시 남아있으면) 오버 상태에서도 폭죽 잔상 유지
+  if(fireworks.length && state !== "win"){
+    updateFireworks(dt);
+    drawFireworks();
+  }
+
+  requestAnimationFrame(loop);
+}
+
+/* =========================
+   BUTTONS
+========================= */
+mainBtn.addEventListener("click", startFromMenu);
+
+/* =========================
+   INIT
+========================= */
+state = "menu";
+showOverlay("시작하기", "화면을 터치하면<br>음표가 위로 점프해요 🎵", "시작하기");
+ovSub.textContent = "※ 시작 버튼을 눌러야 음악이 재생돼요";
+lastTime = performance.now();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
